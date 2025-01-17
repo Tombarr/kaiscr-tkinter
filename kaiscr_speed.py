@@ -3,15 +3,13 @@ import socket
 import base64
 import json
 import sys
-import threading
 import time
 import asyncio
-  
+
 from asyncio import Future
 from typing import (
     Awaitable,
 )
-
 
 class IOStream():
     def __init__(self, socket: socket.socket) -> None:
@@ -57,15 +55,16 @@ class IOStream():
         if self.socket:
             self.socket.close()
         self.socket = None
-        
+
 class TakeScreenshot:
     def __init__(self, host="127.0.0.1", port=6000,delay=0.01):
         self.delay=delay
         self.screenshot_cmd = '{"type":"screenshotToDataURL","to":"%s"}'
         self.listTabs_cmd = '{"to":"root","type":"listTabs"}'
+        self.getSystemInfo_cmd = '{"type":"getDescription","to":"%s"}'
         self.substring_cmd='{"type":"substring","start":%d,"end":%d,"to":"%s"}'
         self.sock = socket.socket()
-        self.sock.connect((host, port)) 
+        self.sock.connect((host, port))
         self.buffersize = 1024
         self.callback=None
 
@@ -83,24 +82,41 @@ class TakeScreenshot:
         while not buffer.endswith(b":"):
             buffer += self.sock.recv(1)
         size = int(buffer[:-1].decode())
-        self.deviceActor = json.loads(self.sock.recv(size))["deviceActor"]        
-        self.sendScreenShotCmd = self.__with_len(self.screenshot_cmd % self.deviceActor) 
+        self.tabs = json.loads(self.sock.recv(size))
+
+        # Print the result of the listTab command
+        json_formatted_str = json.dumps(self.tabs, indent=2)
+        print(json_formatted_str)
+
+        self.deviceActor = self.tabs["deviceActor"]
+        self.sendScreenShotCmd = self.__with_len(self.screenshot_cmd % self.deviceActor)
+
+        # Get and print system info
+        self.sock.send(self.__with_len(self.getSystemInfo_cmd % self.deviceActor))
+        buffer = b""
+        while not buffer.endswith(b":"):
+            buffer += self.sock.recv(1)
+        size = int(buffer.replace(b":", b"").decode())
+        self.deviceInfo = json.loads(self.sock.recv(size))
+        json_formatted_str = json.dumps(self.deviceInfo, indent=2)
+        print(json_formatted_str)
+
         self.sockasync = IOStream(self.sock)
 
     def __with_len(self, command):
         return f'{len(command)}:{command}'.encode()
-    
-    async def __receive(self, size): 
+
+    async def __receive(self, size):
         buffer = b""
         while len(buffer) < size:
             buffer += await self.sockasync.read_bytes(self.buffersize)
         return buffer
-        
+
     def getMiddle(self,data,startstr,endstr):
         startindex = data.find(startstr)
         endindex = data.rfind(endstr)
         return data[startindex+len(startstr):endindex]
-         
+
     async def screenshotSpeed(self):
         starttime = time.time()
         try:
@@ -109,14 +125,12 @@ class TakeScreenshot:
             while not buffer.endswith(b":"):
                 buffer += await self.sockasync.read_bytes(1)
             size = int(buffer[:-1])
-            buffer = await self.__receive(size) 
-            #print(buffer)
-            image = json.loads(buffer)["value"] 
-            #print(image)
+            buffer = await self.__receive(size)
+            image = json.loads(buffer)["value"]
             if type(image) == str:
                 return base64.b64decode(image.split(",")[1])
             image_len = image["length"]
-            actor = image["actor"] 
+            actor = image["actor"]
             cmd = self.substring_cmd % (0, image_len, actor)
             self.sockasync.write(self.__with_len(cmd))
 
@@ -124,28 +138,22 @@ class TakeScreenshot:
             while not buffer.endswith(b":"):
                 buffer += await self.sockasync.read_bytes(1)
             bufcount=int(buffer[:-1])
-            
-            #print(bufcount)
+
             buffer = self.__receive(bufcount)
-            #print(buffer)
-            #print(buffer)
             imgstart = b'"data:image/png;base64,'
             imgend = b'","from":"'
-            #image = image['initial'].split(",")[1] 
             image = self.getMiddle(await buffer,imgstart,imgend)
-            #image = json.loads(buffer)["substring"].split(",")[1].encode()
-            #image += b"=" * (-len(image) % 4)
             return base64.b64decode(image)
         finally:
             print(time.time() - starttime )
-     
+
     def close(self):
         self.sock.close()
 
 if __name__ == "__main__":
     import time
     from argparse import ArgumentParser
-    d = "Take screenshot(s) from a KaiOS/FFOS device"
+    d = "Take screenshot(s) from a KaiOS Smart Touch device"
     parser = ArgumentParser(description = d)
     parser.add_argument("--host",
         metavar = "host",
@@ -172,16 +180,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.count == 0:
         sys.exit(0)
-    
-    takeScreenshot = TakeScreenshot(args.host, args.port) 
+
+    takeScreenshot = TakeScreenshot(args.host, args.port)
     print(takeScreenshot)
- 
+
     async def main():  #封装多任务的入口函数
         while(1):
-            img = await takeScreenshot.screenshotSpeed() 
-            
-    loop = asyncio.get_event_loop()               
-    results = loop.run_until_complete(main())
-     
-    loop.close()     
+            img = await takeScreenshot.screenshotSpeed()
 
+    loop = asyncio.get_event_loop()
+    results = loop.run_until_complete(main())
+
+    loop.close()
